@@ -66,4 +66,4 @@ logs/
 *.log
 
 # Runtime data (local Docker volume mounts)
-.runtime/
+.runtime/*
