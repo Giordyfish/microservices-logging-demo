@@ -1,0 +1,194 @@
+# Docker Compose Configuration for E-Commerce Microservices Demo
+#
+# This file defines all the services needed for the observability demo:
+# - 3 Application Services (API Gateway, Product Service, Order Service)
+# - 5 Observability Services (Loki, Tempo, Grafana, Prometheus, OTEL Collector)
+#
+# Key Points:
+# - Each service runs in its own container
+# - Services communicate via Docker network
+# - Environment variables configure service URLs
+# - Volumes persist data and configuration
+
+version: "3.8"
+
+services:
+  # ============================================
+  # APPLICATION SERVICES
+  # ============================================
+
+  # API Gateway - Entry point for all client requests
+  api-gateway:
+    build:
+      context: .
+      dockerfile: services/api_gateway/Dockerfile
+    container_name: api-gateway
+    ports:
+      - "8000:8000" # Expose to host
+    environment:
+      # Service URLs (Docker DNS resolves service names)
+      PRODUCT_SERVICE_URL: http://product-service:8001
+      ORDER_SERVICE_URL: http://order-service:8002
+      # OpenTelemetry configuration
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: api_gateway
+    volumes:
+      # Mount source code for development (hot reload)
+      - ./services/api_gateway:/app
+      - ./shared:/app/shared
+      # Mount logs directory
+      - ./.runtime/logs/api_gateway:/app/logs
+    depends_on:
+      - otel-collector
+      - product-service
+      - order-service
+    networks:
+      - ecommerce-network
+
+  # Product Service - Manages product catalog
+  product-service:
+    build:
+      context: .
+      dockerfile: services/product_service/Dockerfile
+    container_name: product-service
+    ports:
+      - "8001:8001"
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: product_service
+    volumes:
+      - ./services/product_service:/app
+      - ./shared:/app/shared
+      - ./.runtime/logs/product_service:/app/logs
+    depends_on:
+      - otel-collector
+    networks:
+      - ecommerce-network
+
+  # Order Service - Manages customer orders
+  order-service:
+    build:
+      context: .
+      dockerfile: services/order_service/Dockerfile
+    container_name: order-service
+    ports:
+      - "8002:8002"
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: order_service
+    volumes:
+      - ./services/order_service:/app
+      - ./shared:/app/shared
+      - ./.runtime/logs/order_service:/app/logs
+    depends_on:
+      - otel-collector
+    networks:
+      - ecommerce-network
+
+  # ============================================
+  # OBSERVABILITY STACK
+  # ============================================
+
+  # Loki - Log aggregation system
+  loki:
+    image: grafana/loki:3.5.0
+    container_name: loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      # Mount configuration file
+      - ./observability/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      # Persist log data
+      - ./.runtime/data/loki:/loki
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+  # Tempo - Distributed tracing backend
+  tempo:
+    image: grafana/tempo:2.9.0
+    container_name: tempo
+    ports:
+      - "3200:3200" # Tempo HTTP (for Grafana queries)
+      # Note: OTLP ports (4317, 4318) are only for internal communication with OTEL Collector
+      # They don't need to be exposed to the host
+    command: -config.file=/etc/tempo/tempo-config.yml
+    volumes:
+      - ./observability/tempo/tempo-config.yml:/etc/tempo/tempo-config.yml:ro
+      - ./.runtime/data/tempo:/tmp/tempo
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+  # OTEL Collector - Receives telemetry from services and forwards to backends
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.133.0
+    container_name: otel-collector
+    ports:
+      - "4318:4318" # OTLP HTTP receiver
+      - "4317:4317" # OTLP gRPC receiver
+    command: --config=/etc/otelcol/collector.yaml
+    volumes:
+      - ./observability/otel-collector/collector.yaml:/etc/otelcol/collector.yaml:ro
+    depends_on:
+      - loki
+      - tempo
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+  # Grafana - Visualization and querying interface
+  grafana:
+    image: grafana/grafana:12.2
+    container_name: grafana
+    ports:
+      - "3000:3000" # Grafana UI
+    environment:
+      # Default admin credentials (CHANGE IN PRODUCTION!)
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      # Enable explore features
+      - GF_EXPLORE_ENABLED=true
+      # Disable login form for easier demo access
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      # Persist Grafana data (dashboards, settings)
+      - ./.runtime/data/grafana:/var/lib/grafana
+      # Auto-provision datasources
+      - ./observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      # Auto-provision dashboards
+      - ./observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+    depends_on:
+      - loki
+      - tempo
+      - prometheus
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+  # Prometheus - Metrics scraping
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - api-gateway
+      - product-service
+      - order-service
+    networks:
+      - ecommerce-network
+    restart: unless-stopped
+
+# ============================================
+# NETWORKS
+# ============================================
+networks:
+  ecommerce-network:
+    driver: bridge
+    name: ecommerce-network

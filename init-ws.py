@@ -1,143 +1,135 @@
 #!/usr/bin/env python3
 """
 Workspace initialization script.
-Creates a virtual environment and installs uv package manager and project dependencies inside it.
+
+Each service now owns its own virtual environment and dependency graph. This
+script simply orchestrates those per-service initializers so the entire
+workspace can be bootstrapped with a single command.
 """
 
 import subprocess
 import sys
-import platform
+import os
+import json
+import shutil
 from pathlib import Path
 
 
-def run_command(cmd, shell=False, check=True):
-    """Run a command and return the result."""
-    print(f"Running: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
+REPO_ROOT = Path(__file__).parent.resolve()
+SERVICES_DIR = REPO_ROOT / "services"
+
+
+def run_command(cmd, cwd=None):
+    """Run a command in an optional working directory."""
+    printable = " ".join(str(part) for part in cmd)
+    location = f" (cwd={cwd})" if cwd else ""
+    print(f"Running: {printable}{location}")
+    subprocess.run(cmd, check=True, cwd=cwd)
+    
+def install_vscode_extensions():
+    extensions_file = os.path.join(".vscode", "extensions.json")
+    if not os.path.exists(extensions_file):
+        print("No VSCode extensions file found.")
+        return
     try:
-        result = subprocess.run(
-            cmd,
-            shell=shell,
-            check=check,
-            capture_output=True,
-            text=True
-        )
-        if result.stdout:
-            print(result.stdout)
-        return result
-    except subprocess.CalledProcessError as e:
-        print(f"Error: {e.stderr}")
-        raise
+        with open(extensions_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        print("Error parsing extensions.json:", e)
+        return
+    recommendations = data.get("recommendations", [])
+    if not recommendations:
+        print("No VSCode extension recommendations found.")
+        return
+
+    code_cli = shutil.which("code")
+    if not code_cli:
+        print("VSCode CLI command 'code' not found; skipping extension installation.")
+        return
+
+    for ext in recommendations:
+        print(f"Installing VSCode extension: {ext}")
+        try:
+            run_command([code_cli, "--install-extension", ext])
+        except subprocess.CalledProcessError as exc:
+            print(
+                f"  [WARN] Failed to install {ext} (exit {exc.returncode}). "
+                "Open the repo with 'code .' so VS Code connects to this WSL distro, "
+                "then rerun init-ws.py."
+            )
 
 
 def check_python_version():
-    """Ensure Python version meets requirements."""
-    required_version = (3, 10)
-    current_version = sys.version_info[:2]
-
-    if current_version < required_version:
-        print(f"Error: Python {required_version[0]}.{required_version[1]}+ required, "
-              f"but {current_version[0]}.{current_version[1]} found.")
-        sys.exit(1)
-
-    print(f"[OK] Python {current_version[0]}.{current_version[1]} detected")
-
-
-def get_venv_paths():
-    """Get virtual environment paths based on OS."""
-    venv_dir = Path(".venv")
-    system = platform.system()
-
-    if system == "Windows":
-        python_path = venv_dir / "Scripts" / "python.exe"
-        pip_path = venv_dir / "Scripts" / "pip.exe"
-    else:
-        python_path = venv_dir / "bin" / "python"
-        pip_path = venv_dir / "bin" / "pip"
-
-    return venv_dir, python_path, pip_path
+    """Ensure the host interpreter meets the minimum requirements."""
+    required_major, required_minor = 3, 10
+    if (sys.version_info.major, sys.version_info.minor) < (
+        required_major,
+        required_minor,
+    ):
+        raise SystemExit(
+            f"Python {required_major}.{required_minor}+ is required, "
+            f"but {sys.version_info.major}.{sys.version_info.minor} is active."
+        )
+    print(f"[OK] Python {sys.version_info.major}.{sys.version_info.minor} detected")
 
 
-def create_virtual_environment():
-    """Create a virtual environment using venv."""
-    venv_dir, python_path, _ = get_venv_paths()
+def discover_service_initializers():
+    """Return a sorted list of (service_name, init_script_path)."""
+    if not SERVICES_DIR.exists():
+        return []
 
-    if venv_dir.exists():
-        print("[OK] Virtual environment already exists")
-        return python_path
+    scripts = []
+    for service_dir in sorted(SERVICES_DIR.iterdir()):
+        if not service_dir.is_dir():
+            continue
+        init_script = service_dir / "init.py"
+        if init_script.exists():
+            scripts.append((service_dir.name, init_script))
 
-    print("Creating virtual environment...")
-    run_command([sys.executable, "-m", "venv", ".venv"])
-    print("[OK] Virtual environment created")
-
-    return python_path
-
-
-def install_uv_in_venv(python_path):
-    """Install uv package manager inside the virtual environment."""
-    print("Installing uv in virtual environment...")
-
-    # First ensure pip is up to date
-    run_command([str(python_path), "-m", "pip", "install", "--upgrade", "pip"])
-
-    # Install uv
-    run_command([str(python_path), "-m", "pip", "install", "uv"])
-
-    print("[OK] uv installed successfully in virtual environment")
+    return scripts
 
 
-def install_dependencies():
-    """Install project dependencies using uv inside the virtual environment."""
-    print("Installing project dependencies...")
-
-    venv_dir, _, _ = get_venv_paths()
-    system = platform.system()
-
-    if system == "Windows":
-        uv_path = venv_dir / "Scripts" / "uv.exe"
-    else:
-        uv_path = venv_dir / "bin" / "uv"
-
-    # Install in editable mode with all dependencies
-    run_command([str(uv_path), "pip", "install", "-e", "."])
-
-    print("[OK] Dependencies installed successfully")
+def run_service_initializer(service_name, init_script):
+    """Execute a service's init.py using the current Python interpreter."""
+    banner = f"Initializing {service_name}"
+    print("\n" + "=" * len(banner))
+    print(banner)
+    print("=" * len(banner))
+    run_command([sys.executable, str(init_script)], cwd=init_script.parent)
 
 
 def main():
-    """Main initialization workflow."""
+    """Entry point for workspace initialization."""
     print("=" * 50)
-    print("Initializing workspace...")
+    print("Installing recommended VSCode extensions")
+    print("=" * 50)
+    install_vscode_extensions()
+
+    print("=" * 50)
+    print("Initializing all service environments")
     print("=" * 50)
 
-    # Check Python version
     check_python_version()
 
-    # Create virtual environment
-    python_path = create_virtual_environment()
+    service_initializers = discover_service_initializers()
+    if not service_initializers:
+        print("No service init.py scripts were found under the services directory.")
+        return
 
-    # Install uv inside the venv
-    install_uv_in_venv(python_path)
-
-    # Install dependencies
-    install_dependencies()
+    for service_name, init_script in service_initializers:
+        run_service_initializer(service_name, init_script)
 
     print("\n" + "=" * 50)
-    print("[OK] Workspace initialized successfully!")
+    print("[OK] All service environments initialized successfully!")
     print("=" * 50)
-
-    # Print activation instructions
-    system = platform.system()
-    if system == "Windows":
-        activate_cmd = ".venv\\Scripts\\activate"
-    else:
-        activate_cmd = "source .venv/bin/activate"
-
-    print(f"\nTo activate the virtual environment, run:\n  {activate_cmd}")
 
 
 if __name__ == "__main__":
     try:
         main()
-    except Exception as e:
-        print(f"\n[ERROR] Initialization failed: {e}")
+    except subprocess.CalledProcessError as exc:
+        print(f"\n[ERROR] Command failed with exit code {exc.returncode}")
+        sys.exit(exc.returncode)
+    except Exception as exc:
+        print(f"\n[ERROR] Initialization failed: {exc}")
         sys.exit(1)
