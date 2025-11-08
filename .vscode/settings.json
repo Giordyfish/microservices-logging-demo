@@ -1,0 +1,22 @@
+{
+  "editor.formatOnSave": true,
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter"
+  },
+  "python.formatting.provider": "none",
+  "python.linting.enabled": true,
+  "python.linting.pylintEnabled": false,
+  "python.linting.flake8Enabled": false,
+  "ruff.enable": true,
+  "ruff.fixAll": true,
+  "ruff.lint.select": ["FAST"],
+  "ruff.lint.per-file-ignores": {
+    "test_*.py": ["D101", "D103"],
+    "/tests/**.py": ["D101", "D103"],
+    "!src/**.py": ["D"]
+  },
+  "autoDocstring.docstringFormat": "google",
+  "python.testing.pytestArgs": ["."],
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": true
+}
