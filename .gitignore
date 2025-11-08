@@ -55,5 +55,6 @@ coverage.xml
 Thumbs.db
 
 # Claude Code
+.claude/
 .claude/settings.local.json
 CLAUDE.md
